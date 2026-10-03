@@ -22,33 +22,38 @@ TIMEOUT_S = 120
 MODES = {
     "paragraf": {
         "label": "paragraf",
-        "max_tokens": 600,
+        "max_tokens": 900,
         "system": (
             "Kamu meringkas dokumen untuk user Indonesia. Balas HANYA dengan SATU "
-            "paragraf ringkasan dalam Bahasa Indonesia yang santai dan jelas, "
-            "maksimal 1500 karakter. Jangan mengarang fakta yang tidak ada di dokumen. "
-            "Jika dokumen bukan bahasa Indonesia, tetap ringkas dalam Bahasa Indonesia."
+            "paragraf ringkasan yang padat dan komprehensif dalam Bahasa Indonesia "
+            "yang santai dan jelas, sekitar 800-1500 karakter. Cover: topik utama, "
+            "poin-poin penting, dan kesimpulan. Jangan mengarang fakta yang tidak "
+            "ada di dokumen. Jika dokumen bukan bahasa Indonesia, tetap ringkas "
+            "dalam Bahasa Indonesia."
         ),
     },
     "keypoints": {
         "label": "keypoints",
-        "max_tokens": 700,
+        "max_tokens": 1200,
         "system": (
-            "Kamu meringkas dokumen untuk user Indonesia. Balas HANYA dengan 3-8 "
-            "bullet point (pakai •) berisi poin-poin paling penting, dalam Bahasa "
-            "Indonesia yang santai dan jelas. Total maksimal 1500 karakter. "
-            "Jangan mengarang fakta yang tidak ada di dokumen."
+            "Kamu meringkas dokumen untuk user Indonesia. Balas HANYA dengan 8-12 "
+            "bullet point (pakai •) dalam Bahasa Indonesia yang santai dan jelas. "
+            "Tiap poin 1-2 kalimat yang informatif — jangan terlalu singkat sampai "
+            "kehilangan konteks. Urutkan dari yang paling penting. Jangan mengarang "
+            "fakta yang tidak ada di dokumen."
         ),
     },
     "lengkap": {
         "label": "lengkap (keypoints + paragraf)",
-        "max_tokens": 1000,
+        "max_tokens": 1600,
         "system": (
             "Kamu meringkas dokumen untuk user Indonesia. Balas HANYA dengan ringkasan "
-            "dalam Bahasa Indonesia yang santai dan jelas: 3-8 bullet point (pakai •) "
-            "berisi poin-poin penting, lalu satu paragraf kesimpulan maksimal 2 kalimat. "
-            "Total maksimal 1500 karakter. Jangan mengarang fakta yang tidak ada di dokumen. "
-            "Jika dokumen bukan bahasa Indonesia, tetap ringkas dalam Bahasa Indonesia."
+            "dalam Bahasa Indonesia yang santai dan jelas, dengan struktur:\n"
+            "1) 8-12 bullet point (pakai •) berisi poin-poin penting, tiap poin 1-2 "
+            "kalimat yang informatif,\n"
+            "2) satu paragraf kesimpulan (3-5 kalimat).\n"
+            "Jangan mengarang fakta yang tidak ada di dokumen. Jika dokumen bukan "
+            "bahasa Indonesia, tetap ringkas dalam Bahasa Indonesia."
         ),
     },
 }
