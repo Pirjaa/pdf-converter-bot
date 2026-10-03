@@ -117,6 +117,10 @@ def summarize_text(text: str, mode: str = "lengkap") -> tuple[str, dict]:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
+            # Cloudflare di depan 9router memblokir UA default
+            # python-urllib (error 1010), jadi kirim UA sendiri.
+            "User-Agent": "converter-bot/1.0",
+            "Accept": "application/json",
         },
         method="POST",
     )
@@ -124,13 +128,20 @@ def summarize_text(text: str, mode: str = "lengkap") -> tuple[str, dict]:
         with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
+        detail = e.read().decode("utf-8", errors="replace")[:200].strip()
+        if e.code == 401:
             raise SummarizeError("API key 9router salah / tidak valid") from e
+        if e.code == 403:
+            raise SummarizeError(
+                f"ditolak 9router/Cloudflare (403){': ' + detail if detail else ''}"
+            ) from e
         if e.code == 404:
             raise SummarizeError(
                 "model 9router nggak ketemu — cek NINE_ROUTER_MODEL / provider-nya"
             ) from e
-        raise SummarizeError(f"9router error {e.code}") from e
+        raise SummarizeError(
+            f"9router error {e.code}{': ' + detail if detail else ''}"
+        ) from e
     except urllib.error.URLError as e:
         raise SummarizeError("9router nggak bisa dihubungi") from e
     except TimeoutError as e:
