@@ -150,18 +150,14 @@ class _SummaryView(discord.ui.View):
             return
 
         header = f"📝 Ringkasan {label} `{self.filename}`:"
-        if len(header) + len(summary) + 2 <= 2000:
-            await interaction.followup.send(f"{header}\n\n{summary}")
-            return
-        # Kepanjangan buat chat -> kirim sebagai file .md
-        out = Path(tempfile.gettempdir()) / f"summary_{interaction.id}.md"
-        out.write_text(
-            f"# Ringkasan {label} — {self.filename}\n\n{summary}",
-            encoding="utf-8",
-        )
+        # Selalu kirim sebagai file .txt biar bisa di-preview langsung di
+        # Discord dan nggak kena limit 2000 karakter pesan chat.
+        out_name = f"ringkasan_{Path(self.filename).stem}.txt"
+        out = Path(tempfile.gettempdir()) / f"summary_{interaction.id}.txt"
+        out.write_text(summary, encoding="utf-8")
         await interaction.followup.send(
-            content=f"{header} kepanjangan buat chat, nih file-nya:",
-            file=discord.File(out, filename=out.name),
+            content=header,
+            file=discord.File(out, filename=out_name),
         )
         asyncio.create_task(_cleanup_after_send(out))
         self.stop()
