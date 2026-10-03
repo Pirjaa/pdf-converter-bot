@@ -2,11 +2,13 @@
 
 Upload file → bot balikin hasil convert-nya di channel yang sama. Python + discord.py.
 
-| Command  | Dari → Ke            |
-|----------|----------------------|
-| `/toword`| PDF → Word (.docx)   |
-| `/topdf` | Word → PDF           |
-| `/tomd`  | PDF → Markdown (.md) |
+| Command  | Dari → Ke                          |
+|----------|--------------------------------------|
+| `/toword`| PDF → Word (.docx)                   |
+| `/topdf` | Word → PDF                           |
+| `/tomd`  | PDF → Markdown (.md)                 |
+| `/ringkas`| PDF/Word/Markdown → ringkasan AI    |
+| `/help`  | bantuan cara pakai                   |
 
 ## Cara pakai (user)
 
@@ -30,7 +32,7 @@ python3 -m venv .venv
 #    - Tab OAuth2 -> URL Generator -> centang `bot` + `applications.commands`
 #    - Buka URL itu buat invite bot ke server
 cp .env.example .env
-nano .env   # isi DISCORD_TOKEN
+nano .env   # isi DISCORD_TOKEN (+ NINE_ROUTER_API_KEY kalau mau pakai /ringkas)
 chmod 600 .env
 
 # 4. Jalan sebagai service

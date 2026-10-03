@@ -4,6 +4,8 @@ Slash commands:
   /toword  PDF -> Word (.docx)
   /topdf   Word (.docx/.doc/.odt/.rtf) -> PDF
   /tomd    PDF -> Markdown (.md)
+  /ringkas PDF/Word/Markdown -> ringkasan AI (via 9router)
+  /help    bantuan cara pakai
 
 Cara pakai: ketik command, upload file di parameter `file`, tunggu,
 hasil convert dikirim balik di channel yang sama.
@@ -21,9 +23,13 @@ from dotenv import load_dotenv
 
 from converter import (
     ConvertError,
+    SummarizeError,
     convert_docx_to_pdf,
     convert_pdf_to_docx,
     convert_pdf_to_markdown,
+    extract_summary_text,
+    summarize_configured,
+    summarize_text,
 )
 
 load_dotenv()
@@ -68,6 +74,7 @@ class ConverterBot(discord.Client):
         for name, cfg in COMMANDS.items():
             self.tree.add_command(_make_command(name, cfg))
         self.tree.add_command(_help_cmd)
+        self.tree.add_command(_ringkas_cmd)
         await self.tree.sync()
 
 
@@ -76,6 +83,7 @@ HELP_TEXT = """🤖 Gua bisa convert file, ini command-nya:
 /toword — PDF ke Word (.docx)
 /topdf — Word ke PDF
 /tomd — PDF ke Markdown (.md)
+/ringkas — ringkas isi PDF/Word pakai AI
 
 Cara pakai: ketik salah satu command di atas, upload file-nya,
 tunggu bentar, ntar gua kirim balik hasilnya di sini.
@@ -85,6 +93,7 @@ Catatan:
 • PDF ke Word nggak pixel-perfect, layout rumit bisa geser dikit
 • PDF hasil scan (foto) nggak kebaca teksnya — butuh OCR, belum gua pasang, masih malas
 • Convert jalan satu-satu, kalau antre sabar ya
+• /ringkas pakai AI via 9router — kalau error, berarti yang ngoding belum setting API key-nya
 
 Kalau ngebug dm aja yang ngoding."""
 
@@ -93,6 +102,79 @@ Kalau ngebug dm aja yang ngoding."""
 async def _help_cmd(interaction: discord.Interaction) -> None:
     # ephemeral: cuma yang ngetik yang bisa liat, biar nggak ngespam channel
     await interaction.response.send_message(HELP_TEXT, ephemeral=True)
+
+
+RINGKAS_EXTS = {".pdf", ".docx", ".md"}
+
+
+@app_commands.command(name="ringkas", description="Ringkas isi dokumen pakai AI (via 9router)")
+@app_commands.describe(file="File PDF/Word/Markdown yang mau diringkas")
+async def _ringkas_cmd(interaction: discord.Interaction, file: discord.Attachment) -> None:
+    await interaction.response.defer(thinking=True)
+    if not summarize_configured():
+        await interaction.followup.send(
+            "❌ fitur /ringkas belum disetting — suruh yang ngoding isi NINE_ROUTER_API_KEY dulu gih"
+        )
+        return
+    try:
+        text = await _extract_for_summary(file)
+        summary = await asyncio.to_thread(summarize_text, text)
+    except SummarizeError as e:
+        await interaction.followup.send(f"❌ Gagal meringkas: {e}")
+        return
+    except Exception:  # noqa: BLE001 - jangan bocorin detail internal ke user
+        await interaction.followup.send(
+            "❌ sorry ini kayanya yg ngoding bodoh dah, coba lagi"
+        )
+        return
+
+    header = f"📝 Ringkasan `{file.filename}`:"
+    if len(header) + len(summary) + 2 <= 2000:
+        await interaction.followup.send(f"{header}\n\n{summary}")
+        return
+    # Kepanjangan buat chat -> kirim sebagai file .md
+    out = Path(tempfile.gettempdir()) / f"ringkas_{file.id}_{Path(file.filename).stem}.md"
+    out.write_text(f"# Ringkasan {file.filename}\n\n{summary}", encoding="utf-8")
+    await interaction.followup.send(
+        content=f"{header} kepanjangan buat chat, nih file-nya:",
+        file=discord.File(out, filename=out.name),
+    )
+    asyncio.create_task(_cleanup_after_send(out))
+
+
+async def _extract_for_summary(file: discord.Attachment) -> str:
+    ext = Path(file.filename).suffix.lower()
+    if ext not in RINGKAS_EXTS:
+        raise SummarizeError(
+            f"yang bener ajalah, masa mau meringkas `{ext or '(tanpa ekstensi)'}`"
+        )
+    if file.size > MAX_FILE_BYTES:
+        raise SummarizeError(
+            f"minimal beliin nitro kalau mau upload "
+            f"{file.size / 1024 / 1024:.1f} MB :)"
+        )
+    if file.size > MAX_PROCESS_BYTES:
+        raise SummarizeError(
+            f"buset {file.size / 1024 / 1024:.1f} MB, server gua kentang — "
+            f"maks {MAX_PROCESS_BYTES / 1024 / 1024:.0f} MB ya"
+        )
+
+    workdir = Path(tempfile.mkdtemp(prefix="ringkas_"))
+    try:
+        src = workdir / f"input{ext}"
+        src.write_bytes(await file.read())
+        # blocking (markitdown) -> lempar ke thread
+        return await asyncio.to_thread(extract_summary_text, src, ext)
+    finally:
+        for p in workdir.rglob("*"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        try:
+            workdir.rmdir()
+        except OSError:
+            pass
 
 
 def _make_command(name: str, cfg: dict) -> app_commands.Command:
