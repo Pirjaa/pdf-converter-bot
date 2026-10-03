@@ -16,17 +16,17 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-MAX_INPUT_CHARS = 12_000
+MAX_INPUT_CHARS = int(os.getenv("SUMMARY_MAX_INPUT_CHARS", "60000"))
 TIMEOUT_S = 120
 
 MODES = {
     "paragraf": {
         "label": "paragraf",
-        "max_tokens": 900,
+        "max_tokens": 1000,
         "system": (
             "Kamu meringkas dokumen untuk user Indonesia. Balas HANYA dengan SATU "
             "paragraf ringkasan yang padat dan komprehensif dalam Bahasa Indonesia "
-            "yang santai dan jelas, sekitar 800-1500 karakter. Cover: topik utama, "
+            "yang santai dan jelas, sekitar 1000-2000 karakter. Cover: topik utama, "
             "poin-poin penting, dan kesimpulan. Jangan mengarang fakta yang tidak "
             "ada di dokumen. Jika dokumen bukan bahasa Indonesia, tetap ringkas "
             "dalam Bahasa Indonesia."
@@ -34,26 +34,32 @@ MODES = {
     },
     "keypoints": {
         "label": "keypoints",
-        "max_tokens": 1200,
+        "max_tokens": 1500,
         "system": (
-            "Kamu meringkas dokumen untuk user Indonesia. Balas HANYA dengan 8-12 "
+            "Kamu meringkas dokumen untuk user Indonesia. Buat ringkasan yang DETAIL "
+            "dan mendalam, BUKAN ringkasan singkat. Balas HANYA dengan 12-20 "
             "bullet point (pakai •) dalam Bahasa Indonesia yang santai dan jelas. "
-            "Tiap poin 1-2 kalimat yang informatif — jangan terlalu singkat sampai "
-            "kehilangan konteks. Urutkan dari yang paling penting. Jangan mengarang "
-            "fakta yang tidak ada di dokumen."
+            "Tiap poin 2-3 kalimat yang substantif — jelaskan alasannya, contohnya, "
+            "atau implikasinya, jangan cuma sebaris fakta kering. Urutkan mengikuti "
+            "alur dokumen. Jangan mengarang fakta yang tidak ada di dokumen."
         ),
     },
     "lengkap": {
         "label": "lengkap (keypoints + paragraf)",
-        "max_tokens": 1600,
+        "max_tokens": 3000,
         "system": (
-            "Kamu meringkas dokumen untuk user Indonesia. Balas HANYA dengan ringkasan "
-            "dalam Bahasa Indonesia yang santai dan jelas, dengan struktur:\n"
-            "1) 8-12 bullet point (pakai •) berisi poin-poin penting, tiap poin 1-2 "
-            "kalimat yang informatif,\n"
-            "2) satu paragraf kesimpulan (3-5 kalimat).\n"
-            "Jangan mengarang fakta yang tidak ada di dokumen. Jika dokumen bukan "
-            "bahasa Indonesia, tetap ringkas dalam Bahasa Indonesia."
+            "Kamu meringkas dokumen untuk user Indonesia. Buat ringkasan yang DETAIL "
+            "dan mendalam, BUKAN ringkasan singkat — user ingin benar-benar paham "
+            "isi dokumen tanpa membacanya.\n"
+            "Ikuti struktur bab/bagian dokumen. Untuk tiap bagian penting, tulis "
+            "sub-judul (format ### Nama Bagian), lalu 4-8 bullet point (pakai •), "
+            "tiap poin 2-3 kalimat yang substantif: jelaskan alasannya, contohnya, "
+            "atau implikasinya.\n"
+            "Tutup dengan ### Kesimpulan berisi satu paragraf penilaian keseluruhan "
+            "(4-6 kalimat).\n"
+            "Pakai Bahasa Indonesia yang santai dan jelas. Jangan mengarang fakta "
+            "yang tidak ada di dokumen. Jika dokumen bukan bahasa Indonesia, tetap "
+            "ringkas dalam Bahasa Indonesia."
         ),
     },
 }
