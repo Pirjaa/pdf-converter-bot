@@ -1,0 +1,19 @@
+[Unit]
+Description=Discord File Converter Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+# Sesuaikan path ke lokasi project di VPS
+WorkingDirectory=/home/ubuntu/converter-bot
+# Sesuaikan path ke venv
+ExecStart=/home/ubuntu/converter-bot/.venv/bin/python bot.py
+Restart=on-failure
+RestartSec=10
+# Token dibaca dari file .env via python-dotenv, jadi tidak perlu di sini.
+# Pastikan file .env hanya bisa dibaca user ini: chmod 600 .env
+
+[Install]
+WantedBy=multi-user.target
