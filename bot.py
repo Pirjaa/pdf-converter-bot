@@ -38,18 +38,21 @@ COMMANDS = {
     "toword": {
         "desc": "Convert PDF jadi Word (.docx)",
         "label": "PDF ke Word",
+        "target": "Word",
         "exts": {".pdf"},
         "out_ext": ".docx",
     },
     "topdf": {
         "desc": "Convert Word jadi PDF",
         "label": "Word ke PDF",
+        "target": "PDF",
         "exts": {".docx", ".doc", ".odt", ".rtf"},
         "out_ext": ".pdf",
     },
     "tomd": {
         "desc": "Convert PDF jadi Markdown (.md)",
         "label": "PDF ke Markdown",
+        "target": "Markdown",
         "exts": {".pdf"},
         "out_ext": ".md",
     },
@@ -73,17 +76,17 @@ def _make_command(name: str, cfg: dict) -> app_commands.Command:
     async def _cmd(interaction: discord.Interaction, file: discord.Attachment) -> None:
         await interaction.response.defer(thinking=True)
         try:
-            out_path, out_name = await _handle(file, cfg, name)
+            out_path, out_name = await _handle(file, cfg)
         except ConvertError as e:
             await interaction.followup.send(f"❌ Gagal convert: {e}")
             return
         except Exception:  # noqa: BLE001 - jangan bocorin detail internal ke user
             await interaction.followup.send(
-                "❌ Waduh, error nggak terduga pas convert. Coba lagi ntar ya."
+                "❌ sorry ini kayanya yg ngoding bodoh dah, coba lagi"
             )
             return
         await interaction.followup.send(
-            content=f"✅ Berhasil convert `{file.filename}` dari {cfg['label']}",
+            content=f"✅ nih udah gua convertin `{file.filename}` dari {cfg['label']}",
             file=discord.File(out_path, filename=out_name),
         )
         # Hapus file hasil setelah terkirim, biar /tmp tidak penuh.
@@ -92,23 +95,22 @@ def _make_command(name: str, cfg: dict) -> app_commands.Command:
     return _cmd
 
 
-async def _handle(file: discord.Attachment, cfg: dict, cmd_name: str) -> tuple[Path, str]:
+async def _handle(file: discord.Attachment, cfg: dict) -> tuple[Path, str]:
     ext = Path(file.filename).suffix.lower()
     if ext not in cfg["exts"]:
-        want = ", ".join(sorted(cfg["exts"]))
         raise ConvertError(
-            f"format `{ext or '(tanpa ekstensi)'}` nggak didukung — "
-            f"/{cmd_name} convert {cfg['label']}, kirim file {want} ya"
+            f"yang bener ajalah, masa mau convert `{ext or '(tanpa ekstensi)'}` "
+            f"ke {cfg['target']}"
         )
     if file.size > MAX_FILE_BYTES:
         raise ConvertError(
-            f"file-nya {file.size / 1024 / 1024:.1f} MB, kegedean — "
-            f"limit Discord {MAX_FILE_BYTES / 1024 / 1024:.0f} MB per file"
+            f"minimal beliin nitro kalau mau upload "
+            f"{file.size / 1024 / 1024:.1f} MB :)"
         )
     if file.size > MAX_PROCESS_BYTES:
         raise ConvertError(
-            "file kegedean buat diproses di server ini "
-            f"(maks {MAX_PROCESS_BYTES / 1024 / 1024:.0f} MB)"
+            f"buset {file.size / 1024 / 1024:.1f} MB, server gua kentang — "
+            f"maks {MAX_PROCESS_BYTES / 1024 / 1024:.0f} MB ya"
         )
 
     workdir = Path(tempfile.mkdtemp(prefix="conv_"))
