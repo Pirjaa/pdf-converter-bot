@@ -95,7 +95,6 @@ Catatan:
 • PDF ke Word nggak pixel-perfect, layout rumit bisa geser dikit
 • PDF hasil scan (foto) nggak kebaca teksnya — butuh OCR, belum gua pasang, masih malas
 • Convert jalan satu-satu, kalau antre sabar ya
-• /summary pakai AI via 9router (sekali upload = sekali ringkas) — kalau error, berarti yang ngoding belum setting API key-nya
 
 Kalau ngebug dm aja yang ngoding."""
 
@@ -111,13 +110,6 @@ SUMMARY_EXTS = {".pdf", ".docx", ".md"}
 # Teks dokumen yang nunggu dipilih modenya: nonce -> teks.
 # Dihapus setelah tombol diklik / view timeout (5 menit).
 _PENDING_SUMMARY: dict[str, str] = {}
-
-
-def _usage_line(usage: dict) -> str:
-    p, c, t = usage.get("prompt", 0), usage.get("completion", 0), usage.get("total", 0)
-    if not (p or c or t):
-        return ""
-    return f"\n\n🔢 Token: {p:,} in + {c:,} out = {t:,} total"
 
 
 class _SummaryView(discord.ui.View):
@@ -147,7 +139,7 @@ class _SummaryView(discord.ui.View):
             )
             return
         try:
-            summary, usage = await asyncio.to_thread(summarize_text, text, mode)
+            summary, _ = await asyncio.to_thread(summarize_text, text, mode)
         except SummarizeError as e:
             await interaction.followup.send(f"❌ Gagal meringkas: {e}")
             return
@@ -158,18 +150,17 @@ class _SummaryView(discord.ui.View):
             return
 
         header = f"📝 Ringkasan {label} `{self.filename}`:"
-        tail = _usage_line(usage)
-        if len(header) + len(summary) + len(tail) + 2 <= 2000:
-            await interaction.followup.send(f"{header}\n\n{summary}{tail}")
+        if len(header) + len(summary) + 2 <= 2000:
+            await interaction.followup.send(f"{header}\n\n{summary}")
             return
         # Kepanjangan buat chat -> kirim sebagai file .md
         out = Path(tempfile.gettempdir()) / f"summary_{interaction.id}.md"
         out.write_text(
-            f"# Ringkasan {label} — {self.filename}\n\n{summary}{tail}",
+            f"# Ringkasan {label} — {self.filename}\n\n{summary}",
             encoding="utf-8",
         )
         await interaction.followup.send(
-            content=f"{header} kepanjangan buat chat, nih file-nya:{tail}",
+            content=f"{header} kepanjangan buat chat, nih file-nya:",
             file=discord.File(out, filename=out.name),
         )
         asyncio.create_task(_cleanup_after_send(out))
