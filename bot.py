@@ -36,17 +36,20 @@ MAX_PROCESS_BYTES = int(os.getenv("MAX_PROCESS_BYTES", str(100 * 1024 * 1024)))
 
 COMMANDS = {
     "toword": {
-        "desc": "Convert PDF menjadi Word (.docx)",
+        "desc": "Convert PDF jadi Word (.docx)",
+        "label": "PDF ke Word",
         "exts": {".pdf"},
         "out_ext": ".docx",
     },
     "topdf": {
-        "desc": "Convert Word menjadi PDF",
+        "desc": "Convert Word jadi PDF",
+        "label": "Word ke PDF",
         "exts": {".docx", ".doc", ".odt", ".rtf"},
         "out_ext": ".pdf",
     },
     "tomd": {
-        "desc": "Convert PDF menjadi Markdown (.md)",
+        "desc": "Convert PDF jadi Markdown (.md)",
+        "label": "PDF ke Markdown",
         "exts": {".pdf"},
         "out_ext": ".md",
     },
@@ -70,16 +73,18 @@ def _make_command(name: str, cfg: dict) -> app_commands.Command:
     async def _cmd(interaction: discord.Interaction, file: discord.Attachment) -> None:
         await interaction.response.defer(thinking=True)
         try:
-            out_path = await _handle(file, cfg)
+            out_path, out_name = await _handle(file, cfg, name)
         except ConvertError as e:
             await interaction.followup.send(f"❌ Gagal convert: {e}")
             return
         except Exception:  # noqa: BLE001 - jangan bocorin detail internal ke user
-            await interaction.followup.send("❌ Error tidak terduga saat convert.")
+            await interaction.followup.send(
+                "❌ Waduh, error nggak terduga pas convert. Coba lagi ntar ya."
+            )
             return
         await interaction.followup.send(
-            content=f"✅ `{file.filename}` → `{out_path.name}`",
-            file=discord.File(out_path, filename=out_path.name),
+            content=f"✅ Berhasil convert `{file.filename}` dari {cfg['label']}",
+            file=discord.File(out_path, filename=out_name),
         )
         # Hapus file hasil setelah terkirim, biar /tmp tidak penuh.
         asyncio.create_task(_cleanup_after_send(out_path))
@@ -87,20 +92,24 @@ def _make_command(name: str, cfg: dict) -> app_commands.Command:
     return _cmd
 
 
-async def _handle(file: discord.Attachment, cfg: dict) -> Path:
+async def _handle(file: discord.Attachment, cfg: dict, cmd_name: str) -> tuple[Path, str]:
     ext = Path(file.filename).suffix.lower()
     if ext not in cfg["exts"]:
         want = ", ".join(sorted(cfg["exts"]))
         raise ConvertError(
-            f"format `{ext or '(tanpa ekstensi)'}` tidak didukung, pakai: {want}"
+            f"format `{ext or '(tanpa ekstensi)'}` nggak didukung — "
+            f"/{cmd_name} convert {cfg['label']}, kirim file {want} ya"
         )
     if file.size > MAX_FILE_BYTES:
         raise ConvertError(
-            f"file {file.size / 1024 / 1024:.1f} MB melebihi limit Discord "
-            f"({MAX_FILE_BYTES / 1024 / 1024:.0f} MB per file)"
+            f"file-nya {file.size / 1024 / 1024:.1f} MB, kegedean — "
+            f"limit Discord {MAX_FILE_BYTES / 1024 / 1024:.0f} MB per file"
         )
     if file.size > MAX_PROCESS_BYTES:
-        raise ConvertError("file terlalu besar untuk diproses di server ini")
+        raise ConvertError(
+            "file kegedean buat diproses di server ini "
+            f"(maks {MAX_PROCESS_BYTES / 1024 / 1024:.0f} MB)"
+        )
 
     workdir = Path(tempfile.mkdtemp(prefix="conv_"))
     try:
@@ -122,7 +131,7 @@ async def _handle(file: discord.Attachment, cfg: dict) -> Path:
         persist = Path(tempfile.gettempdir()) / f"conv_out_{file.id}_{out_name}"
         if final != persist:
             persist.write_bytes(final.read_bytes())
-        return persist
+        return persist, out_name
     finally:
         for p in workdir.rglob("*"):
             try:
