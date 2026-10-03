@@ -67,7 +67,32 @@ class ConverterBot(discord.Client):
     async def setup_hook(self) -> None:
         for name, cfg in COMMANDS.items():
             self.tree.add_command(_make_command(name, cfg))
+        self.tree.add_command(_help_cmd)
         await self.tree.sync()
+
+
+HELP_TEXT = """🤖 Gua bisa convert file, ini command-nya:
+
+/toword — PDF ke Word (.docx)
+/topdf — Word ke PDF
+/tomd — PDF ke Markdown (.md)
+
+Cara pakai: ketik salah satu command di atas, upload file-nya,
+tunggu bentar, ntar gua kirim balik hasilnya di sini.
+
+Catatan:
+• Maks 20MB per file — minimal beliin nitro kalau mau upload lebih gede :)
+• PDF ke Word nggak pixel-perfect, layout rumit bisa geser dikit
+• PDF hasil scan (foto) nggak kebaca teksnya — butuh OCR, belum gua pasang, masih malas
+• Convert jalan satu-satu, kalau antre sabar ya
+
+Kalau ngebug dm aja yang ngoding."""
+
+
+@app_commands.command(name="help", description="Bantuan cara pakai bot ini")
+async def _help_cmd(interaction: discord.Interaction) -> None:
+    # ephemeral: cuma yang ngetik yang bisa liat, biar nggak ngespam channel
+    await interaction.response.send_message(HELP_TEXT, ephemeral=True)
 
 
 def _make_command(name: str, cfg: dict) -> app_commands.Command:
