@@ -6,6 +6,7 @@ ganti-ganti tanpa nyentuh logika convert.
 from .office import convert_docx_to_pdf, convert_pdf_to_docx, ConvertError
 from .markdown import convert_pdf_to_markdown
 from .summarize import (
+    MODES,
     SummarizeError,
     extract_summary_text,
     summarize_configured,
@@ -17,6 +18,7 @@ __all__ = [
     "convert_pdf_to_docx",
     "convert_pdf_to_markdown",
     "ConvertError",
+    "MODES",
     "SummarizeError",
     "extract_summary_text",
     "summarize_configured",

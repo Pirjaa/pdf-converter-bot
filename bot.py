@@ -4,7 +4,7 @@ Slash commands:
   /toword  PDF -> Word (.docx)
   /topdf   Word (.docx/.doc/.odt/.rtf) -> PDF
   /tomd    PDF -> Markdown (.md)
-  /ringkas PDF/Word/Markdown -> ringkasan AI (via 9router)
+  /summary PDF/Word/Markdown -> ringkasan AI (via 9router, pilih mode via tombol)
   /help    bantuan cara pakai
 
 Cara pakai: ketik command, upload file di parameter `file`, tunggu,
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import tempfile
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from converter import (
+    MODES,
     ConvertError,
     SummarizeError,
     convert_docx_to_pdf,
@@ -74,7 +76,7 @@ class ConverterBot(discord.Client):
         for name, cfg in COMMANDS.items():
             self.tree.add_command(_make_command(name, cfg))
         self.tree.add_command(_help_cmd)
-        self.tree.add_command(_ringkas_cmd)
+        self.tree.add_command(_summary_cmd)
         await self.tree.sync()
 
 
@@ -83,7 +85,7 @@ HELP_TEXT = """🤖 Gua bisa convert file, ini command-nya:
 /toword — PDF ke Word (.docx)
 /topdf — Word ke PDF
 /tomd — PDF ke Markdown (.md)
-/ringkas — ringkas isi PDF/Word pakai AI
+/summary — ringkas isi PDF/Word pakai AI (ntar pilih: paragraf / keypoints / lengkap)
 
 Cara pakai: ketik salah satu command di atas, upload file-nya,
 tunggu bentar, ntar gua kirim balik hasilnya di sini.
@@ -93,7 +95,7 @@ Catatan:
 • PDF ke Word nggak pixel-perfect, layout rumit bisa geser dikit
 • PDF hasil scan (foto) nggak kebaca teksnya — butuh OCR, belum gua pasang, masih malas
 • Convert jalan satu-satu, kalau antre sabar ya
-• /ringkas pakai AI via 9router — kalau error, berarti yang ngoding belum setting API key-nya
+• /summary pakai AI via 9router (sekali upload = sekali ringkas) — kalau error, berarti yang ngoding belum setting API key-nya
 
 Kalau ngebug dm aja yang ngoding."""
 
@@ -104,21 +106,105 @@ async def _help_cmd(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(HELP_TEXT, ephemeral=True)
 
 
-RINGKAS_EXTS = {".pdf", ".docx", ".md"}
+SUMMARY_EXTS = {".pdf", ".docx", ".md"}
+
+# Teks dokumen yang nunggu dipilih modenya: nonce -> teks.
+# Dihapus setelah tombol diklik / view timeout (5 menit).
+_PENDING_SUMMARY: dict[str, str] = {}
 
 
-@app_commands.command(name="ringkas", description="Ringkas isi dokumen pakai AI (via 9router)")
+def _usage_line(usage: dict) -> str:
+    p, c, t = usage.get("prompt", 0), usage.get("completion", 0), usage.get("total", 0)
+    if not (p or c or t):
+        return ""
+    return f"\n\n🔢 Token: {p:,} in + {c:,} out = {t:,} total"
+
+
+class _SummaryView(discord.ui.View):
+    """3 tombol mode ringkasan. Sekali klik langsung disable semua
+    (guardrail: 1x upload = 1x ringkas)."""
+
+    def __init__(self, nonce: str, filename: str) -> None:
+        super().__init__(timeout=300)
+        self.nonce = nonce
+        self.filename = filename
+
+    async def on_timeout(self) -> None:
+        _PENDING_SUMMARY.pop(self.nonce, None)
+
+    async def _run(self, interaction: discord.Interaction, mode: str) -> None:
+        label = MODES[mode]["label"]
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            content=f"⏳ lagi ngeringkas `{self.filename}` ({label})...",
+            view=self,
+        )
+        text = _PENDING_SUMMARY.pop(self.nonce, None)
+        if text is None:
+            await interaction.followup.send(
+                "❌ sesi ringkasannya udah kedaluwarsa, upload ulang gih"
+            )
+            return
+        try:
+            summary, usage = await asyncio.to_thread(summarize_text, text, mode)
+        except SummarizeError as e:
+            await interaction.followup.send(f"❌ Gagal meringkas: {e}")
+            return
+        except Exception:  # noqa: BLE001 - jangan bocorin detail internal ke user
+            await interaction.followup.send(
+                "❌ sorry ini kayanya yg ngoding bodoh dah, coba lagi"
+            )
+            return
+
+        header = f"📝 Ringkasan {label} `{self.filename}`:"
+        tail = _usage_line(usage)
+        if len(header) + len(summary) + len(tail) + 2 <= 2000:
+            await interaction.followup.send(f"{header}\n\n{summary}{tail}")
+            return
+        # Kepanjangan buat chat -> kirim sebagai file .md
+        out = Path(tempfile.gettempdir()) / f"summary_{interaction.id}.md"
+        out.write_text(
+            f"# Ringkasan {label} — {self.filename}\n\n{summary}{tail}",
+            encoding="utf-8",
+        )
+        await interaction.followup.send(
+            content=f"{header} kepanjangan buat chat, nih file-nya:{tail}",
+            file=discord.File(out, filename=out.name),
+        )
+        asyncio.create_task(_cleanup_after_send(out))
+        self.stop()
+
+    @discord.ui.button(label="Paragraf", emoji="📝", style=discord.ButtonStyle.primary)
+    async def _btn_para(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._run(interaction, "paragraf")
+
+    @discord.ui.button(label="Keypoints", emoji="📌", style=discord.ButtonStyle.primary)
+    async def _btn_points(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._run(interaction, "keypoints")
+
+    @discord.ui.button(label="Lengkap", emoji="📋", style=discord.ButtonStyle.primary)
+    async def _btn_full(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._run(interaction, "lengkap")
+
+
+@app_commands.command(name="summary", description="Ringkas isi dokumen pakai AI (via 9router)")
 @app_commands.describe(file="File PDF/Word/Markdown yang mau diringkas")
-async def _ringkas_cmd(interaction: discord.Interaction, file: discord.Attachment) -> None:
+async def _summary_cmd(interaction: discord.Interaction, file: discord.Attachment) -> None:
     await interaction.response.defer(thinking=True)
     if not summarize_configured():
         await interaction.followup.send(
-            "❌ fitur /ringkas belum disetting — suruh yang ngoding isi NINE_ROUTER_API_KEY dulu gih"
+            "❌ fitur /summary belum disetting — suruh yang ngoding isi NINE_ROUTER_API_KEY dulu gih"
         )
         return
     try:
         text = await _extract_for_summary(file)
-        summary = await asyncio.to_thread(summarize_text, text)
     except SummarizeError as e:
         await interaction.followup.send(f"❌ Gagal meringkas: {e}")
         return
@@ -128,23 +214,17 @@ async def _ringkas_cmd(interaction: discord.Interaction, file: discord.Attachmen
         )
         return
 
-    header = f"📝 Ringkasan `{file.filename}`:"
-    if len(header) + len(summary) + 2 <= 2000:
-        await interaction.followup.send(f"{header}\n\n{summary}")
-        return
-    # Kepanjangan buat chat -> kirim sebagai file .md
-    out = Path(tempfile.gettempdir()) / f"ringkas_{file.id}_{Path(file.filename).stem}.md"
-    out.write_text(f"# Ringkasan {file.filename}\n\n{summary}", encoding="utf-8")
+    nonce = secrets.token_hex(8)
+    _PENDING_SUMMARY[nonce] = text
     await interaction.followup.send(
-        content=f"{header} kepanjangan buat chat, nih file-nya:",
-        file=discord.File(out, filename=out.name),
+        content=f"📄 `{file.filename}` siap diringkas. Mau yang model gimana?",
+        view=_SummaryView(nonce, file.filename),
     )
-    asyncio.create_task(_cleanup_after_send(out))
 
 
 async def _extract_for_summary(file: discord.Attachment) -> str:
     ext = Path(file.filename).suffix.lower()
-    if ext not in RINGKAS_EXTS:
+    if ext not in SUMMARY_EXTS:
         raise SummarizeError(
             f"yang bener ajalah, masa mau meringkas `{ext or '(tanpa ekstensi)'}`"
         )

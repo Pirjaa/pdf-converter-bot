@@ -7,7 +7,7 @@ Upload file → bot balikin hasil convert-nya di channel yang sama. Python + dis
 | `/toword`| PDF → Word (.docx)                   |
 | `/topdf` | Word → PDF                           |
 | `/tomd`  | PDF → Markdown (.md)                 |
-| `/ringkas`| PDF/Word/Markdown → ringkasan AI    |
+| `/summary`| PDF/Word/Markdown → ringkasan AI (pilih mode via tombol) |
 | `/help`  | bantuan cara pakai                   |
 
 ## Cara pakai (user)
@@ -32,7 +32,7 @@ python3 -m venv .venv
 #    - Tab OAuth2 -> URL Generator -> centang `bot` + `applications.commands`
 #    - Buka URL itu buat invite bot ke server
 cp .env.example .env
-nano .env   # isi DISCORD_TOKEN (+ NINE_ROUTER_API_KEY kalau mau pakai /ringkas)
+nano .env   # isi DISCORD_TOKEN (+ NINE_ROUTER_API_KEY kalau mau pakai /summary)
 chmod 600 .env
 
 # 4. Jalan sebagai service

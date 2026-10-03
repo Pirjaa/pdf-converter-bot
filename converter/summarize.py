@@ -3,7 +3,7 @@
 Config via env (isi di .env):
   NINE_ROUTER_BASE_URL  default https://router.joysi.my.id/v1
   NINE_ROUTER_API_KEY   wajib diisi
-  NINE_ROUTER_MODEL     default kr/claude-sonnet-4.5
+  NINE_ROUTER_MODEL     default ag/gemini-3.8-flash-high (provider Antigravity)
 
 Env dibaca lazy (di dalam fungsi), karena modul ini di-import sebelum
 load_dotenv() jalan di bot.py.
@@ -19,13 +19,39 @@ from pathlib import Path
 MAX_INPUT_CHARS = 12_000
 TIMEOUT_S = 120
 
-SYSTEM_PROMPT = (
-    "Kamu meringkas dokumen untuk user Indonesia. Balas HANYA dengan ringkasan "
-    "dalam Bahasa Indonesia yang santai dan jelas: 3-8 bullet point berisi "
-    "poin-poin penting, lalu satu paragraf kesimpulan maksimal 2 kalimat. "
-    "Total maksimal 1500 karakter. Jangan mengarang fakta yang tidak ada di dokumen. "
-    "Jika dokumen bukan bahasa Indonesia, tetap ringkas dalam Bahasa Indonesia."
-)
+MODES = {
+    "paragraf": {
+        "label": "paragraf",
+        "max_tokens": 600,
+        "system": (
+            "Kamu meringkas dokumen untuk user Indonesia. Balas HANYA dengan SATU "
+            "paragraf ringkasan dalam Bahasa Indonesia yang santai dan jelas, "
+            "maksimal 1500 karakter. Jangan mengarang fakta yang tidak ada di dokumen. "
+            "Jika dokumen bukan bahasa Indonesia, tetap ringkas dalam Bahasa Indonesia."
+        ),
+    },
+    "keypoints": {
+        "label": "keypoints",
+        "max_tokens": 700,
+        "system": (
+            "Kamu meringkas dokumen untuk user Indonesia. Balas HANYA dengan 3-8 "
+            "bullet point (pakai •) berisi poin-poin paling penting, dalam Bahasa "
+            "Indonesia yang santai dan jelas. Total maksimal 1500 karakter. "
+            "Jangan mengarang fakta yang tidak ada di dokumen."
+        ),
+    },
+    "lengkap": {
+        "label": "lengkap (keypoints + paragraf)",
+        "max_tokens": 1000,
+        "system": (
+            "Kamu meringkas dokumen untuk user Indonesia. Balas HANYA dengan ringkasan "
+            "dalam Bahasa Indonesia yang santai dan jelas: 3-8 bullet point (pakai •) "
+            "berisi poin-poin penting, lalu satu paragraf kesimpulan maksimal 2 kalimat. "
+            "Total maksimal 1500 karakter. Jangan mengarang fakta yang tidak ada di dokumen. "
+            "Jika dokumen bukan bahasa Indonesia, tetap ringkas dalam Bahasa Indonesia."
+        ),
+    },
+}
 
 
 class SummarizeError(Exception):
@@ -35,7 +61,7 @@ class SummarizeError(Exception):
 def _cfg() -> tuple[str, str, str]:
     base = os.getenv("NINE_ROUTER_BASE_URL", "https://router.joysi.my.id/v1").rstrip("/")
     key = os.getenv("NINE_ROUTER_API_KEY", "")
-    model = os.getenv("NINE_ROUTER_MODEL", "kr/claude-sonnet-4.5")
+    model = os.getenv("NINE_ROUTER_MODEL", "ag/gemini-3.8-flash-high")
     return base, key, model
 
 
@@ -60,8 +86,14 @@ def extract_summary_text(src: Path, ext: str) -> str:
     return text
 
 
-def summarize_text(text: str) -> str:
-    """Kirim teks ke 9router, kembalikan ringkasan (blocking, lempar ke thread)."""
+def summarize_text(text: str, mode: str = "lengkap") -> tuple[str, dict]:
+    """Kirim teks ke 9router.
+
+    Kembalikan (ringkasan, usage) dengan usage = {"prompt": int,
+    "completion": int, "total": int}. Blocking, lempar ke thread.
+    """
+    if mode not in MODES:
+        raise SummarizeError(f"mode `{mode}` nggak dikenal")
     base_url, api_key, model = _cfg()
     if not api_key:
         raise SummarizeError("not_configured")
@@ -69,14 +101,15 @@ def summarize_text(text: str) -> str:
     if len(text) > MAX_INPUT_CHARS:
         text = text[:MAX_INPUT_CHARS] + "\n\n[dokumen dipotong karena kepanjangan]"
 
+    cfg = MODES[mode]
     body = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": cfg["system"]},
             {"role": "user", "content": f"Ringkas dokumen berikut:\n\n{text}"},
         ],
         "temperature": 0.3,
-        "max_tokens": 800,
+        "max_tokens": cfg["max_tokens"],
     }
     req = urllib.request.Request(
         f"{base_url}/chat/completions",
@@ -93,6 +126,10 @@ def summarize_text(text: str) -> str:
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise SummarizeError("API key 9router salah / tidak valid") from e
+        if e.code == 404:
+            raise SummarizeError(
+                "model 9router nggak ketemu — cek NINE_ROUTER_MODEL / provider-nya"
+            ) from e
         raise SummarizeError(f"9router error {e.code}") from e
     except urllib.error.URLError as e:
         raise SummarizeError("9router nggak bisa dihubungi") from e
@@ -105,4 +142,11 @@ def summarize_text(text: str) -> str:
         raise SummarizeError("9router ngasih respon kosong") from e
     if not summary:
         raise SummarizeError("9router ngasih respon kosong")
-    return summary
+
+    usage = payload.get("usage") or {}
+    usage_info = {
+        "prompt": int(usage.get("prompt_tokens") or 0),
+        "completion": int(usage.get("completion_tokens") or 0),
+        "total": int(usage.get("total_tokens") or 0),
+    }
+    return summary, usage_info
