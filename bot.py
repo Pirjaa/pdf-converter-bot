@@ -1,20 +1,23 @@
 """Discord bot: file converter.
 
 Slash commands:
-  /toword  PDF -> Word (.docx)
-  /topdf   Word (.docx/.doc/.odt/.rtf) -> PDF
-  /tomd    PDF -> Markdown (.md)
-  /summary PDF/Word/Markdown -> ringkasan AI (via 9router, pilih mode via tombol)
-  /help    bantuan cara pakai
+  /toword    PDF -> Word (.docx)
+  /topdf     Word (.docx/.doc/.odt/.rtf) -> PDF
+  /tomd      PDF -> Markdown (.md)
+  /summary   PDF/Word/Markdown -> AI summary (via 9router, pick a style with buttons)
+  /mergepdf  Merge up to 5 PDFs into one file
+  /splitpdf  Extract pages from a PDF (e.g. "1-3,7,10-12")
+  /help      How to use this bot
 
-Cara pakai: ketik command, upload file di parameter `file`, tunggu,
-hasil convert dikirim balik di channel yang sama.
+Usage: run a command, upload the file in the `file` parameter, wait,
+and the result is sent back in the same channel.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 import secrets
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -30,6 +33,10 @@ from converter import (
     convert_pdf_to_docx,
     convert_pdf_to_markdown,
     extract_summary_text,
+    merge_pdfs,
+    parse_page_spec,
+    pdf_page_count,
+    split_pdf,
     summarize_configured,
     summarize_text,
 )
@@ -37,30 +44,27 @@ from converter import (
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-# Limit upload Discord akun gratis (per file). Naikkan kalau server di-boost / Nitro.
+# Free Discord upload limit per file. Raise if the server is boosted / Nitro.
 MAX_FILE_BYTES = int(os.getenv("MAX_FILE_BYTES", str(20 * 1024 * 1024)))
-# Batas ukuran file yang mau diproses, biar VPS tidak kehabisan RAM/disk.
+# Max file size to process, so the VPS doesn't run out of RAM/disk.
 MAX_PROCESS_BYTES = int(os.getenv("MAX_PROCESS_BYTES", str(100 * 1024 * 1024)))
 
 COMMANDS = {
     "toword": {
-        "desc": "Convert PDF jadi Word (.docx)",
-        "label": "PDF ke Word",
-        "target": "Word",
+        "desc": "Convert PDF to Word (.docx)",
+        "label": "PDF to Word",
         "exts": {".pdf"},
         "out_ext": ".docx",
     },
     "topdf": {
-        "desc": "Convert Word jadi PDF",
-        "label": "Word ke PDF",
-        "target": "PDF",
+        "desc": "Convert Word to PDF",
+        "label": "Word to PDF",
         "exts": {".docx", ".doc", ".odt", ".rtf"},
         "out_ext": ".pdf",
     },
     "tomd": {
-        "desc": "Convert PDF jadi Markdown (.md)",
-        "label": "PDF ke Markdown",
-        "target": "Markdown",
+        "desc": "Convert PDF to Markdown (.md)",
+        "label": "PDF to Markdown",
         "exts": {".pdf"},
         "out_ext": ".md",
     },
@@ -77,44 +81,168 @@ class ConverterBot(discord.Client):
             self.tree.add_command(_make_command(name, cfg))
         self.tree.add_command(_help_cmd)
         self.tree.add_command(_summary_cmd)
+        self.tree.add_command(_mergepdf_cmd)
+        self.tree.add_command(_splitpdf_cmd)
         await self.tree.sync()
 
 
-HELP_TEXT = """🤖 Gua bisa convert file, ini command-nya:
+HELP_TEXT = """📄 Converter Bot — how to use
 
-/toword — PDF ke Word (.docx)
-/topdf — Word ke PDF
-/tomd — PDF ke Markdown (.md)
-/summary — ringkas isi PDF/Word pakai AI (ntar pilih: paragraf / keypoints / lengkap)
+Commands:
+/toword — Convert PDF to Word (.docx)
+/topdf — Convert Word to PDF
+/tomd — Convert PDF to Markdown (.md)
+/summary — Summarize a PDF/Word document with AI (you'll pick a style: Paragraph / Key points / Full)
+/mergepdf — Merge up to 5 PDFs into one file
+/splitpdf — Extract pages from a PDF, e.g. pages "1-3,7,10-12"
 
-Cara pakai: ketik salah satu command di atas, upload file-nya,
-tunggu bentar, ntar gua kirim balik hasilnya di sini.
+How to use: run a command, upload your file in the file parameter, wait a moment, and the result will be sent back in this channel.
 
-Catatan:
-• Maks 20MB per file — minimal beliin nitro kalau mau upload lebih gede :)
-• PDF ke Word nggak pixel-perfect, layout rumit bisa geser dikit
-• PDF hasil scan (foto) nggak kebaca teksnya — butuh OCR, belum gua pasang, masih malas
-• Convert jalan satu-satu, kalau antre sabar ya
+Notes:
+• Max 20MB per file (Discord's free upload limit)
+• PDF to Word conversion isn't pixel-perfect — complex layouts may shift slightly
+• Scanned/image PDFs contain no readable text — OCR is not supported yet
+• Conversions run one at a time, so please be patient if there's a queue
 
-Kalau ngebug dm aja yang ngoding."""
+Found a bug? Please DM the developer."""
 
 
-@app_commands.command(name="help", description="Bantuan cara pakai bot ini")
+@app_commands.command(name="help", description="How to use this bot")
 async def _help_cmd(interaction: discord.Interaction) -> None:
-    # ephemeral: cuma yang ngetik yang bisa liat, biar nggak ngespam channel
+    # Ephemeral: only the requester sees it, keeps the channel clean.
     await interaction.response.send_message(HELP_TEXT, ephemeral=True)
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _validate_upload(filename: str, size: int, allowed_exts: set[str]) -> str:
+    """Return the lowercase extension, or raise ConvertError."""
+    ext = Path(filename).suffix.lower()
+    if ext not in allowed_exts:
+        want = ", ".join(sorted(allowed_exts))
+        raise ConvertError(
+            f"unsupported format `{ext or '(no extension)'}` — accepted formats: {want}"
+        )
+    if size > MAX_FILE_BYTES:
+        raise ConvertError(
+            f"file is {size / 1024 / 1024:.1f} MB — exceeds Discord's "
+            f"{MAX_FILE_BYTES / 1024 / 1024:.0f} MB per-file limit"
+        )
+    if size > MAX_PROCESS_BYTES:
+        raise ConvertError(
+            "file is too large to process on this server "
+            f"(max {MAX_PROCESS_BYTES / 1024 / 1024:.0f} MB)"
+        )
+    return ext
+
+
+def _check_output_size(path: Path) -> None:
+    size = path.stat().st_size
+    if size > MAX_FILE_BYTES:
+        raise ConvertError(
+            f"the result is {size / 1024 / 1024:.1f} MB — exceeds Discord's "
+            f"{MAX_FILE_BYTES / 1024 / 1024:.0f} MB upload limit"
+        )
+
+
+def _rmtree(workdir: Path) -> None:
+    for p in workdir.rglob("*"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    try:
+        workdir.rmdir()
+    except OSError:
+        pass
+
+
+async def _download(attachment: discord.Attachment, dest: Path) -> None:
+    dest.write_bytes(await attachment.read())
+
+
+async def _cleanup_after_send(path: Path) -> None:
+    await asyncio.sleep(10)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Convert commands (/toword, /topdf, /tomd)
+# ---------------------------------------------------------------------------
+
+def _make_command(name: str, cfg: dict) -> app_commands.Command:
+    @app_commands.command(name=name, description=cfg["desc"])
+    @app_commands.describe(file="File to convert")
+    async def _cmd(interaction: discord.Interaction, file: discord.Attachment) -> None:
+        await interaction.response.defer(thinking=True)
+        try:
+            out_path, out_name = await _handle(file, cfg)
+            _check_output_size(out_path)
+        except ConvertError as e:
+            await interaction.followup.send(f"❌ Conversion failed: {e}")
+            return
+        except Exception:  # noqa: BLE001 - don't leak internals to the user
+            await interaction.followup.send(
+                "❌ An unexpected error occurred while converting. Please try again."
+            )
+            return
+        await interaction.followup.send(
+            content=f"✅ Converted `{file.filename}` ({cfg['label']})",
+            file=discord.File(out_path, filename=out_name),
+        )
+        # Delete the result after sending so /tmp doesn't fill up.
+        asyncio.create_task(_cleanup_after_send(out_path))
+
+    return _cmd
+
+
+async def _handle(file: discord.Attachment, cfg: dict) -> tuple[Path, str]:
+    ext = _validate_upload(file.filename, file.size, cfg["exts"])
+
+    workdir = Path(tempfile.mkdtemp(prefix="conv_"))
+    try:
+        src = workdir / f"input{ext}"
+        await _download(file, src)
+
+        out_name = f"{Path(file.filename).stem}{cfg['out_ext']}"
+        if cfg["out_ext"] == ".md":
+            # blocking -> run in a thread
+            text = await asyncio.to_thread(convert_pdf_to_markdown, src)
+            final = workdir / out_name
+            final.write_text(text, encoding="utf-8")
+        elif cfg["out_ext"] == ".docx":
+            final = await convert_pdf_to_docx(src, workdir)
+        else:
+            final = await convert_docx_to_pdf(src, workdir)
+
+        # Move to a clean final name outside workdir (workdir is deleted in finally)
+        persist = Path(tempfile.gettempdir()) / f"conv_out_{file.id}_{out_name}"
+        if final != persist:
+            persist.write_bytes(final.read_bytes())
+        return persist, out_name
+    finally:
+        _rmtree(workdir)
+
+
+# ---------------------------------------------------------------------------
+# /summary
+# ---------------------------------------------------------------------------
+
 SUMMARY_EXTS = {".pdf", ".docx", ".md"}
 
-# Teks dokumen yang nunggu dipilih modenya: nonce -> teks.
-# Dihapus setelah tombol diklik / view timeout (5 menit).
+# Document text waiting for a style to be picked: nonce -> text.
+# Removed after a button is clicked / the view times out (5 minutes).
 _PENDING_SUMMARY: dict[str, str] = {}
 
 
 class _SummaryView(discord.ui.View):
-    """3 tombol mode ringkasan. Sekali klik langsung disable semua
-    (guardrail: 1x upload = 1x ringkas)."""
+    """3 summary-style buttons. One click disables all of them
+    (guardrail: 1 upload = 1 summary)."""
 
     def __init__(self, nonce: str, filename: str) -> None:
         super().__init__(timeout=300)
@@ -129,30 +257,30 @@ class _SummaryView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(
-            content=f"⏳ lagi ngeringkas `{self.filename}` ({label})...",
+            content=f"⏳ Summarizing `{self.filename}` ({label})...",
             view=self,
         )
         text = _PENDING_SUMMARY.pop(self.nonce, None)
         if text is None:
             await interaction.followup.send(
-                "❌ sesi ringkasannya udah kedaluwarsa, upload ulang gih"
+                "❌ This summary session has expired. Please upload the file again."
             )
             return
         try:
             summary, _ = await asyncio.to_thread(summarize_text, text, mode)
         except SummarizeError as e:
-            await interaction.followup.send(f"❌ Gagal meringkas: {e}")
+            await interaction.followup.send(f"❌ Summarization failed: {e}")
             return
-        except Exception:  # noqa: BLE001 - jangan bocorin detail internal ke user
+        except Exception:  # noqa: BLE001 - don't leak internals to the user
             await interaction.followup.send(
-                "❌ sorry ini kayanya yg ngoding bodoh dah, coba lagi"
+                "❌ An unexpected error occurred. Please try again."
             )
             return
 
-        header = f"📝 Ringkasan {label} `{self.filename}`:"
-        # Selalu kirim sebagai file .txt biar bisa di-preview langsung di
-        # Discord dan nggak kena limit 2000 karakter pesan chat.
-        out_name = f"ringkasan_{Path(self.filename).stem}.txt"
+        # Always send as a .txt file: it previews inline in Discord and
+        # sidesteps the 2000-character chat message limit.
+        header = f"📝 {label} summary of `{self.filename}`:"
+        out_name = f"summary_{Path(self.filename).stem}.txt"
         out = Path(tempfile.gettempdir()) / f"summary_{interaction.id}.txt"
         out.write_text(summary, encoding="utf-8")
         await interaction.followup.send(
@@ -162,176 +290,166 @@ class _SummaryView(discord.ui.View):
         asyncio.create_task(_cleanup_after_send(out))
         self.stop()
 
-    @discord.ui.button(label="Paragraf", emoji="📝", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Paragraph", emoji="📝", style=discord.ButtonStyle.primary)
     async def _btn_para(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await self._run(interaction, "paragraf")
+        await self._run(interaction, "paragraph")
 
-    @discord.ui.button(label="Keypoints", emoji="📌", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Key points", emoji="📌", style=discord.ButtonStyle.primary)
     async def _btn_points(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         await self._run(interaction, "keypoints")
 
-    @discord.ui.button(label="Lengkap", emoji="📋", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Full", emoji="📋", style=discord.ButtonStyle.primary)
     async def _btn_full(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await self._run(interaction, "lengkap")
+        await self._run(interaction, "full")
 
 
-@app_commands.command(name="summary", description="Ringkas isi dokumen pakai AI (via 9router)")
-@app_commands.describe(file="File PDF/Word/Markdown yang mau diringkas")
+@app_commands.command(name="summary", description="Summarize a document with AI (via 9router)")
+@app_commands.describe(file="PDF/Word/Markdown file to summarize")
 async def _summary_cmd(interaction: discord.Interaction, file: discord.Attachment) -> None:
     await interaction.response.defer(thinking=True)
     if not summarize_configured():
         await interaction.followup.send(
-            "❌ fitur /summary belum disetting — suruh yang ngoding isi NINE_ROUTER_API_KEY dulu gih"
+            "❌ The /summary feature is not configured yet (missing NINE_ROUTER_API_KEY)."
         )
         return
     try:
         text = await _extract_for_summary(file)
     except SummarizeError as e:
-        await interaction.followup.send(f"❌ Gagal meringkas: {e}")
+        await interaction.followup.send(f"❌ Summarization failed: {e}")
         return
-    except Exception:  # noqa: BLE001 - jangan bocorin detail internal ke user
+    except Exception:  # noqa: BLE001 - don't leak internals to the user
         await interaction.followup.send(
-            "❌ sorry ini kayanya yg ngoding bodoh dah, coba lagi"
+            "❌ An unexpected error occurred. Please try again."
         )
         return
 
     nonce = secrets.token_hex(8)
     _PENDING_SUMMARY[nonce] = text
     await interaction.followup.send(
-        content=f"📄 `{file.filename}` siap diringkas. Mau yang model gimana?",
+        content=f"📄 `{file.filename}` is ready. Choose a summary style:",
         view=_SummaryView(nonce, file.filename),
     )
 
 
 async def _extract_for_summary(file: discord.Attachment) -> str:
-    ext = Path(file.filename).suffix.lower()
-    if ext not in SUMMARY_EXTS:
-        raise SummarizeError(
-            f"yang bener ajalah, masa mau meringkas `{ext or '(tanpa ekstensi)'}`"
-        )
-    if file.size > MAX_FILE_BYTES:
-        raise SummarizeError(
-            f"minimal beliin nitro kalau mau upload "
-            f"{file.size / 1024 / 1024:.1f} MB :)"
-        )
-    if file.size > MAX_PROCESS_BYTES:
-        raise SummarizeError(
-            f"buset {file.size / 1024 / 1024:.1f} MB, server gua kentang — "
-            f"maks {MAX_PROCESS_BYTES / 1024 / 1024:.0f} MB ya"
-        )
-
-    workdir = Path(tempfile.mkdtemp(prefix="ringkas_"))
+    ext = _validate_upload(file.filename, file.size, SUMMARY_EXTS)
+    workdir = Path(tempfile.mkdtemp(prefix="summary_"))
     try:
         src = workdir / f"input{ext}"
-        src.write_bytes(await file.read())
-        # blocking (markitdown) -> lempar ke thread
+        await _download(file, src)
+        # blocking (markitdown) -> run in a thread
         return await asyncio.to_thread(extract_summary_text, src, ext)
     finally:
-        for p in workdir.rglob("*"):
-            try:
-                p.unlink()
-            except OSError:
-                pass
-        try:
-            workdir.rmdir()
-        except OSError:
-            pass
+        _rmtree(workdir)
 
 
-def _make_command(name: str, cfg: dict) -> app_commands.Command:
-    @app_commands.command(name=name, description=cfg["desc"])
-    @app_commands.describe(file="File yang mau di-convert")
-    async def _cmd(interaction: discord.Interaction, file: discord.Attachment) -> None:
-        await interaction.response.defer(thinking=True)
+# ---------------------------------------------------------------------------
+# /mergepdf and /splitpdf
+# ---------------------------------------------------------------------------
+
+@app_commands.command(name="mergepdf", description="Merge up to 5 PDFs into one file")
+@app_commands.describe(
+    file1="First PDF",
+    file2="Second PDF (optional)",
+    file3="Third PDF (optional)",
+    file4="Fourth PDF (optional)",
+    file5="Fifth PDF (optional)",
+)
+async def _mergepdf_cmd(
+    interaction: discord.Interaction,
+    file1: discord.Attachment,
+    file2: discord.Attachment | None = None,
+    file3: discord.Attachment | None = None,
+    file4: discord.Attachment | None = None,
+    file5: discord.Attachment | None = None,
+) -> None:
+    await interaction.response.defer(thinking=True)
+    files = [f for f in (file1, file2, file3, file4, file5) if f is not None]
+    try:
+        for f in files:
+            _validate_upload(f.filename, f.size, {".pdf"})
+        workdir = Path(tempfile.mkdtemp(prefix="merge_"))
         try:
-            out_path, out_name = await _handle(file, cfg)
-        except ConvertError as e:
-            await interaction.followup.send(f"❌ Gagal convert: {e}")
-            return
-        except Exception:  # noqa: BLE001 - jangan bocorin detail internal ke user
-            await interaction.followup.send(
-                "❌ sorry ini kayanya yg ngoding bodoh dah, coba lagi"
-            )
-            return
+            srcs = []
+            for i, f in enumerate(files):
+                src = workdir / f"input{i}.pdf"
+                await _download(f, src)
+                srcs.append(src)
+            out_name = f"merged_{Path(file1.filename).stem}.pdf"
+            out = await asyncio.to_thread(merge_pdfs, srcs, workdir / out_name)
+            persist = Path(tempfile.gettempdir()) / f"merge_out_{interaction.id}_{out_name}"
+            shutil.copy(out, persist)
+            _check_output_size(persist)
+        finally:
+            _rmtree(workdir)
+    except ConvertError as e:
+        await interaction.followup.send(f"❌ Merge failed: {e}")
+        return
+    except Exception:  # noqa: BLE001 - don't leak internals to the user
         await interaction.followup.send(
-            content=f"✅ nih udah gua convertin `{file.filename}` dari {cfg['label']}",
-            file=discord.File(out_path, filename=out_name),
+            "❌ An unexpected error occurred. Please try again."
         )
-        # Hapus file hasil setelah terkirim, biar /tmp tidak penuh.
-        asyncio.create_task(_cleanup_after_send(out_path))
+        return
+    await interaction.followup.send(
+        content=f"✅ Merged {len(files)} PDF(s) into `{out_name}`",
+        file=discord.File(persist, filename=out_name),
+    )
+    asyncio.create_task(_cleanup_after_send(persist))
 
-    return _cmd
 
-
-async def _handle(file: discord.Attachment, cfg: dict) -> tuple[Path, str]:
-    ext = Path(file.filename).suffix.lower()
-    if ext not in cfg["exts"]:
-        raise ConvertError(
-            f"yang bener ajalah, masa mau convert `{ext or '(tanpa ekstensi)'}` "
-            f"ke {cfg['target']}"
-        )
-    if file.size > MAX_FILE_BYTES:
-        raise ConvertError(
-            f"minimal beliin nitro kalau mau upload "
-            f"{file.size / 1024 / 1024:.1f} MB :)"
-        )
-    if file.size > MAX_PROCESS_BYTES:
-        raise ConvertError(
-            f"buset {file.size / 1024 / 1024:.1f} MB, server gua kentang — "
-            f"maks {MAX_PROCESS_BYTES / 1024 / 1024:.0f} MB ya"
-        )
-
-    workdir = Path(tempfile.mkdtemp(prefix="conv_"))
+@app_commands.command(name="splitpdf", description="Extract pages from a PDF")
+@app_commands.describe(
+    file="PDF file",
+    pages='Pages to extract, e.g. "1-3,7,10-12"',
+)
+async def _splitpdf_cmd(
+    interaction: discord.Interaction, file: discord.Attachment, pages: str
+) -> None:
+    await interaction.response.defer(thinking=True)
     try:
-        src = workdir / f"input{ext}"
-        src.write_bytes(await file.read())
-
-        out_name = f"{Path(file.filename).stem}{cfg['out_ext']}"
-        if cfg["out_ext"] == ".md":
-            # blocking -> lempar ke thread
-            text = await asyncio.to_thread(convert_pdf_to_markdown, src)
-            final = workdir / out_name
-            final.write_text(text, encoding="utf-8")
-        elif cfg["out_ext"] == ".docx":
-            final = await convert_pdf_to_docx(src, workdir)
-        else:
-            final = await convert_docx_to_pdf(src, workdir)
-
-        # Pindahkan ke nama final yang rapi di luar workdir (workdir dihapus di finally)
-        persist = Path(tempfile.gettempdir()) / f"conv_out_{file.id}_{out_name}"
-        if final != persist:
-            persist.write_bytes(final.read_bytes())
-        return persist, out_name
-    finally:
-        for p in workdir.rglob("*"):
-            try:
-                p.unlink()
-            except OSError:
-                pass
+        _validate_upload(file.filename, file.size, {".pdf"})
+        workdir = Path(tempfile.mkdtemp(prefix="split_"))
         try:
-            workdir.rmdir()
-        except OSError:
-            pass
-
-
-async def _cleanup_after_send(path: Path) -> None:
-    await asyncio.sleep(10)
-    try:
-        path.unlink()
-    except OSError:
-        pass
+            src = workdir / "input.pdf"
+            await _download(file, src)
+            page_count = await asyncio.to_thread(pdf_page_count, src)
+            try:
+                selected = parse_page_spec(pages, page_count)
+            except ValueError as e:
+                raise ConvertError(f"invalid page selection: {e}")
+            safe = pages.replace(" ", "").replace(",", "_")
+            out_name = f"{Path(file.filename).stem}_pages_{safe}.pdf"
+            out = await asyncio.to_thread(split_pdf, src, selected, workdir / out_name)
+            persist = Path(tempfile.gettempdir()) / f"split_out_{interaction.id}_{out_name}"
+            shutil.copy(out, persist)
+            _check_output_size(persist)
+        finally:
+            _rmtree(workdir)
+    except ConvertError as e:
+        await interaction.followup.send(f"❌ Split failed: {e}")
+        return
+    except Exception:  # noqa: BLE001 - don't leak internals to the user
+        await interaction.followup.send(
+            "❌ An unexpected error occurred. Please try again."
+        )
+        return
+    await interaction.followup.send(
+        content=f"✅ Extracted {len(selected)} page(s) from `{file.filename}`",
+        file=discord.File(persist, filename=out_name),
+    )
+    asyncio.create_task(_cleanup_after_send(persist))
 
 
 def main() -> None:
     if not TOKEN:
         raise SystemExit(
-            "DISCORD_TOKEN belum di-set (isi file .env dulu, contoh di .env.example)"
+            "DISCORD_TOKEN is not set (fill in .env first, see .env.example)"
         )
     ConverterBot().run(TOKEN)
 

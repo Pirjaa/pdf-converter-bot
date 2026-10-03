@@ -3,3 +3,4 @@ python-dotenv
 markitdown[pdf]
 pymupdf
 pdf2docx
+pypdf

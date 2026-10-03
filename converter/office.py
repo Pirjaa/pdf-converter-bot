@@ -38,16 +38,16 @@ async def _soffice_convert(src: Path, outdir: Path, fmt: str, timeout: int = 180
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            raise ConvertError(f"convert {src.name} timeout ({timeout}s), kemungkinan file rusak/berat")
+            raise ConvertError(f"converting {src.name} timed out ({timeout}s) — the file may be corrupted or too heavy")
 
         if proc.returncode != 0:
             err = (stderr or b"").decode("utf-8", "replace")[-500:]
-            raise ConvertError(f"LibreOffice gagal convert {src.name}: {err or 'unknown error'}")
+            raise ConvertError(f"LibreOffice failed to convert {src.name}: {err or 'unknown error'}")
 
     candidates = list(outdir.glob(f"{src.stem}.{fmt}")) or list(outdir.glob(f"{src.stem}.*"))
     outputs = [p for p in candidates if p.suffix.lower() == f".{fmt}" and p != src]
     if not outputs:
-        raise ConvertError(f"file hasil tidak ditemukan setelah convert {src.name}")
+        raise ConvertError(f"output file not found after converting {src.name}")
     return outputs[0]
 
 
@@ -72,6 +72,6 @@ async def convert_pdf_to_docx(src: Path, outdir: Path, timeout: int = 300) -> Pa
     try:
         return await asyncio.wait_for(asyncio.to_thread(_run), timeout)
     except asyncio.TimeoutError:
-        raise ConvertError(f"convert {src.name} timeout ({timeout}s), kemungkinan file rusak/berat")
+        raise ConvertError(f"converting {src.name} timed out ({timeout}s) — the file may be corrupted or too heavy")
     except ImportError as e:
-        raise ConvertError("pdf2docx belum terinstall: pip install pdf2docx") from e
+        raise ConvertError("pdf2docx is not installed: pip install pdf2docx") from e
