@@ -35,6 +35,7 @@ from converter import (
     extract_summary_text,
     merge_pdfs,
     parse_page_spec,
+    parse_page_spec_groups,
     pdf_page_count,
     split_pdf,
     summarize_configured,
@@ -94,7 +95,7 @@ Commands:
 /tomd — Convert PDF to Markdown (.md)
 /summary — Summarize a PDF/Word document with AI (you'll pick a style: Paragraph / Key points / Full)
 /mergepdf — Merge up to 5 PDFs into one file
-/splitpdf — Extract pages from a PDF, e.g. pages "1-3,7,10-12"
+/splitpdf — Extract pages from a PDF, e.g. pages "1-3,7,10-12" (one file or separate files)
 
 How to use: run a command, upload your file in the file parameter, wait a moment, and the result will be sent back in this channel.
 
@@ -407,28 +408,51 @@ async def _mergepdf_cmd(
 @app_commands.describe(
     file="PDF file",
     pages='Pages to extract, e.g. "1-3,7,10-12"',
+    mode="Single file merges everything into one PDF; Separate files creates one PDF per comma-group",
+)
+@app_commands.choices(
+    mode=[
+        app_commands.Choice(name="Single file", value="single"),
+        app_commands.Choice(name="Separate files", value="separate"),
+    ]
 )
 async def _splitpdf_cmd(
-    interaction: discord.Interaction, file: discord.Attachment, pages: str
+    interaction: discord.Interaction,
+    file: discord.Attachment,
+    pages: str,
+    mode: str = "single",
 ) -> None:
     await interaction.response.defer(thinking=True)
     try:
         _validate_upload(file.filename, file.size, {".pdf"})
         workdir = Path(tempfile.mkdtemp(prefix="split_"))
+        jobs: list[tuple[list[int], str]] = []
+        sent: list[tuple[Path, str]] = []
         try:
             src = workdir / "input.pdf"
             await _download(file, src)
             page_count = await asyncio.to_thread(pdf_page_count, src)
+            stem = Path(file.filename).stem
             try:
-                selected = parse_page_spec(pages, page_count)
+                if mode == "separate":
+                    groups = parse_page_spec_groups(pages, page_count)
+                    raw_groups = [g.strip() for g in pages.split(",") if g.strip()]
+                    jobs = [
+                        (sel, f"{stem}_pages_{raw.replace(' ', '')}.pdf")
+                        for sel, raw in zip(groups, raw_groups)
+                    ]
+                else:
+                    selected = parse_page_spec(pages, page_count)
+                    safe = pages.replace(" ", "").replace(",", "_")
+                    jobs = [(selected, f"{stem}_pages_{safe}.pdf")]
             except ValueError as e:
                 raise ConvertError(f"invalid page selection: {e}")
-            safe = pages.replace(" ", "").replace(",", "_")
-            out_name = f"{Path(file.filename).stem}_pages_{safe}.pdf"
-            out = await asyncio.to_thread(split_pdf, src, selected, workdir / out_name)
-            persist = Path(tempfile.gettempdir()) / f"split_out_{interaction.id}_{out_name}"
-            shutil.copy(out, persist)
-            _check_output_size(persist)
+            for selected, out_name in jobs:
+                out = await asyncio.to_thread(split_pdf, src, selected, workdir / out_name)
+                persist = Path(tempfile.gettempdir()) / f"split_out_{interaction.id}_{out_name}"
+                shutil.copy(out, persist)
+                _check_output_size(persist)
+                sent.append((persist, out_name))
         finally:
             _rmtree(workdir)
     except ConvertError as e:
@@ -439,11 +463,17 @@ async def _splitpdf_cmd(
             "❌ An unexpected error occurred. Please try again."
         )
         return
+    total = sum(len(sel) for sel, _ in jobs)
+    if len(sent) == 1:
+        content = f"✅ Extracted {total} page(s) from `{file.filename}`"
+    else:
+        content = f"✅ Split `{file.filename}` into {len(sent)} PDFs ({total} pages total)"
     await interaction.followup.send(
-        content=f"✅ Extracted {len(selected)} page(s) from `{file.filename}`",
-        file=discord.File(persist, filename=out_name),
+        content=content,
+        files=[discord.File(path, filename=name) for path, name in sent],
     )
-    asyncio.create_task(_cleanup_after_send(persist))
+    for path, _ in sent:
+        asyncio.create_task(_cleanup_after_send(path))
 
 
 def main() -> None:

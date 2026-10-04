@@ -9,7 +9,7 @@ Upload a file → the bot sends the converted result back in the same channel. P
 | `/tomd`    | PDF → Markdown (.md)                   |
 | `/summary` | PDF/Word/Markdown → AI summary (pick a style via buttons) |
 | `/mergepdf`| Up to 5 PDFs → one merged PDF          |
-| `/splitpdf`| PDF → selected pages (e.g. "1-3,7,10-12") |
+| `/splitpdf`| PDF → selected pages ("1-3,7,10-12"), single or separate files |
 | `/help`    | How to use                             |
 
 ## Usage

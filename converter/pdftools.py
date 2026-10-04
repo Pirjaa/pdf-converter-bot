@@ -79,3 +79,20 @@ def parse_page_spec(spec: str, page_count: int) -> list[int]:
         raise ValueError('no pages selected — e.g. "1-3,7,10-12"')
     seen: set[int] = set()
     return [p for p in pages if not (p in seen or seen.add(p))]
+
+
+def parse_page_spec_groups(spec: str, page_count: int) -> list[list[int]]:
+    """Split "1-2,3" into per-comma-group page lists: [[0, 1], [2]].
+
+    Used for "separate files" split mode — each comma group becomes its
+    own output PDF. Raises ValueError with a user-safe message.
+    """
+    groups: list[list[int]] = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        groups.append(parse_page_spec(part, page_count))
+    if not groups:
+        raise ValueError('no pages selected — e.g. "1-3,7,10-12"')
+    return groups

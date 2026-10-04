@@ -5,7 +5,13 @@ change without touching the conversion logic.
 """
 from .office import convert_docx_to_pdf, convert_pdf_to_docx, ConvertError
 from .markdown import convert_pdf_to_markdown
-from .pdftools import merge_pdfs, parse_page_spec, pdf_page_count, split_pdf
+from .pdftools import (
+    merge_pdfs,
+    parse_page_spec,
+    parse_page_spec_groups,
+    pdf_page_count,
+    split_pdf,
+)
 from .summarize import (
     MODES,
     SummarizeError,
@@ -24,6 +30,7 @@ __all__ = [
     "extract_summary_text",
     "merge_pdfs",
     "parse_page_spec",
+    "parse_page_spec_groups",
     "pdf_page_count",
     "split_pdf",
     "summarize_configured",

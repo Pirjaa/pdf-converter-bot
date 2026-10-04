@@ -30,8 +30,8 @@ MODES = {
         "max_tokens": 1000,
         "system": (
             "You are summarizing a document. Reply ONLY with ONE dense, "
-            "comprehensive summary paragraph in clear, natural English, about "
-            "1000-2000 characters. Cover: the main topic, the key points, and "
+            "comprehensive summary paragraph in the SAME language as the document, "
+            "about 1000-2000 characters. Cover: the main topic, the key points, and "
             "the conclusion. Do not invent facts that are not in the document."
         ),
     },
@@ -41,7 +41,7 @@ MODES = {
         "system": (
             "You are summarizing a document. Write a DETAILED and thorough "
             "summary, NOT a brief one. Reply ONLY with 12-20 bullet points "
-            "(use •) in clear, natural English. Each point should be 2-3 "
+            "(use •) in the SAME language as the document. Each point should be 2-3 "
             "substantive sentences — explain the reasoning, examples, or "
             "implications, not just dry one-liners. Follow the document's flow. "
             "Do not invent facts that are not in the document."
@@ -53,15 +53,15 @@ MODES = {
         "system": (
             "You are summarizing a document. Write a DETAILED and thorough "
             "summary, NOT a brief one — the user wants to truly understand the "
-            "document without reading it.\n"
+            "document without reading it. Write the summary in the SAME language "
+            "as the document.\n"
             "Follow the document's section structure. For each important section, "
             "write a sub-heading (### Section Name format), then 4-8 bullet points "
             "(use •), each 2-3 substantive sentences: explain the reasoning, "
             "examples, or implications.\n"
             "End with ### Conclusion containing one overall assessment paragraph "
             "(4-6 sentences).\n"
-            "Use clear, natural English. Do not invent facts that are not in "
-            "the document."
+            "Do not invent facts that are not in the document."
         ),
     },
 }
